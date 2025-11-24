@@ -18,10 +18,8 @@ def sort_corners_clockwise(pts: np.ndarray) -> np.ndarray:
     Returns points ordered:
         [top-left, top-right, bottom-right, bottom-left]
     """
-
-    # Use sum and diff trick to identify corners
-    s = pts.sum(axis=1)          # x + y
-    diff = np.diff(pts, axis=1)  # y - x
+    s = pts.sum(axis=1)       
+    diff = np.diff(pts, axis=1)  
 
     top_left = pts[np.argmin(s)]
     bottom_right = pts[np.argmax(s)]

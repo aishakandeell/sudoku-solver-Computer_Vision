@@ -8,8 +8,6 @@ OUTPUT_DIR = os.path.join("data", "output")
 
 def run_pipeline(image_path: str):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # ---------- 1. Load & optional resize ----------
     original = cv2.imread(image_path)
     if original is None:
         raise ValueError(f"Could not read image: {image_path}")
@@ -27,15 +25,16 @@ def run_pipeline(image_path: str):
 
     save_debug_image("01_original.png", original_resized)
 
-    # ---------- 2. Preprocessing ----------
     gray = cv2.cvtColor(original_resized, cv2.COLOR_BGR2GRAY)
+
+    # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # gray = clahe.apply(gray)
+
     save_debug_image("02_gray.png", gray)
 
-    # blur to reduce noise
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
     save_debug_image("03_blur.png", blurred)
 
-    # adaptive threshold to get clear lines
     binary = cv2.adaptiveThreshold(
         blurred,
         255,
@@ -44,37 +43,37 @@ def run_pipeline(image_path: str):
         11,
         2
     )
-    # invert so grid lines -> white
+
     binary_inv = cv2.bitwise_not(binary)
     save_debug_image("04_binary_inverted.png", binary_inv)
 
-    # small morphology to thicken/close lines
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     morphed = cv2.morphologyEx(binary_inv, cv2.MORPH_CLOSE, kernel, iterations=2)
     save_debug_image("05_morphed.png", morphed)
 
     preprocessed_vis = cv2.cvtColor(morphed, cv2.COLOR_GRAY2BGR)
 
-    # ---------- 3. Find outer frame (largest contour) ----------
     contours, _ = cv2.findContours(morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
         raise RuntimeError("No contours found – check preprocessing or image quality.")
 
-    # choose largest contour by area
     largest = max(contours, key=cv2.contourArea)
 
-    # approximate polygon
+
     peri = cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
     if len(approx) != 4:
-        print(f"Warning: expected 4 points, got {len(approx)}. Trying to continue anyway.")
+        print(f"Warning: expected 4 points, got {len(approx)}. Using rotated bounding box instead.")
+        rect = cv2.minAreaRect(largest)
+        box = cv2.boxPoints(rect)
+        corners = box.astype(np.float32)
 
-    corners = approx.reshape(-1, 2).astype(np.float32)
+    else:
+        corners = approx.reshape(4, 2).astype(np.float32)
     corners = sort_corners_clockwise(corners)
 
-    # visualization of contour + corners
     contour_vis = original_resized.copy()
     cv2.drawContours(contour_vis, [largest], -1, (0, 255, 0), 2)
 
@@ -92,8 +91,7 @@ def run_pipeline(image_path: str):
 
     save_debug_image("06_contour_corners.png", contour_vis)
 
-    # ---------- 4. Perspective transform (straighten grid) ----------
-    GRID_SIZE = 450  # 9x9 cells, 50px each (simple and clean)
+    GRID_SIZE = 450  
 
     dst_pts = np.array([
         [0, 0],
@@ -104,6 +102,7 @@ def run_pipeline(image_path: str):
 
     M = cv2.getPerspectiveTransform(corners, dst_pts)
     warped = cv2.warpPerspective(original_resized, M, (GRID_SIZE, GRID_SIZE))
+
 
     save_debug_image("07_warped.png", warped)
 
