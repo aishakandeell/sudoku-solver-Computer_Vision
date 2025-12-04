@@ -3,6 +3,8 @@ import numpy as np
 import os
 
 from .utils import sort_corners_clockwise, save_debug_image
+from .ocr import recognize_board
+
 
 OUTPUT_DIR = os.path.join("data", "output")
 
@@ -26,9 +28,6 @@ def run_pipeline(image_path: str):
     save_debug_image("01_original.png", original_resized)
 
     gray = cv2.cvtColor(original_resized, cv2.COLOR_BGR2GRAY)
-
-    # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    # gray = clahe.apply(gray)
 
     save_debug_image("02_gray.png", gray)
 
@@ -106,11 +105,17 @@ def run_pipeline(image_path: str):
 
     save_debug_image("07_warped.png", warped)
 
+    board = recognize_board(warped)
+    print("[OCR] Recognized board:")
+    print(board)
+
+
     results = {
         "original": original_resized,
         "preprocessed": preprocessed_vis,
         "contour": contour_vis,
-        "warped": warped
+        "warped": warped,
+        "board": board,   
     }
 
     return results

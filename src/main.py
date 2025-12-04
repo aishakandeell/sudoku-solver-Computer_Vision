@@ -4,7 +4,7 @@ from .pipeline import run_pipeline
 
 def main():
     input_dir = os.path.join("data", "input")
-    image_name = "16.jpg"   
+    image_name = "01.jpg"   
     image_path = os.path.join(input_dir, image_name)
     if not os.path.exists(image_path):
         print(f"Image not found: {image_path}")
