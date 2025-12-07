@@ -5,7 +5,6 @@ import os
 from .utils import sort_corners_clockwise, save_debug_image
 from .ocr import recognize_board
 
-
 OUTPUT_DIR = os.path.join("data", "output")
 
 def run_pipeline(image_path: str):
@@ -59,7 +58,6 @@ def run_pipeline(image_path: str):
 
     largest = max(contours, key=cv2.contourArea)
 
-
     peri = cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
@@ -102,13 +100,11 @@ def run_pipeline(image_path: str):
     M = cv2.getPerspectiveTransform(corners, dst_pts)
     warped = cv2.warpPerspective(original_resized, M, (GRID_SIZE, GRID_SIZE))
 
-
     save_debug_image("07_warped.png", warped)
 
     board = recognize_board(warped)
     print("[OCR] Recognized board:")
     print(board)
-
 
     results = {
         "original": original_resized,

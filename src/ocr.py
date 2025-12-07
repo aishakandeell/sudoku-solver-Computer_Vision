@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 
@@ -5,58 +6,96 @@ GRID_SIZE = 450
 CELL_SIZE = GRID_SIZE // 9
 DIGIT_SIZE = 28  
 
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, "data", "template")
+
 _digit_templates_cache = None
 
-
-def _generate_digit_template(digit: int, size: int = DIGIT_SIZE) -> np.ndarray:
-    """
-    Create a synthetic template image for the given digit using cv2.putText,
-    White digit on black background.
-    """
-    img = np.zeros((size, size), dtype=np.uint8)  # black background
-
-    text = str(digit)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.9
-    thickness = 2
-
-    # Center the digit in the square
-    (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
-    x = (size - tw) // 2
-    y = (size + th) // 2
-
-    cv2.putText(
-        img,
-        text,
-        (x, y),
-        font,
-        font_scale,
-        255,          
-        thickness,
-        cv2.LINE_AA,
+def normalize_digit_image_gray(img_gray):
+    if len(img_gray.shape) == 3:
+        gray = cv2.cvtColor(img_gray, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img_gray.copy()
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, binary = cv2.threshold(
+        blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
-    return img
+
+    h, w = binary.shape
+    margin = int(0.10 * h)
+
+    binary[0:margin, :] = 0
+    binary[h - margin:h, :] = 0
+    binary[:, 0:margin] = 0
+    binary[:, w - margin:w] = 0
+
+    kernel = np.ones((2, 2), np.uint8)
+    binary = cv2.dilate(binary, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        x, y, cw, ch = cv2.boundingRect(largest)
+
+        if cw * ch > 0.01 * (h * w):
+            digit_roi = blur[y:y + ch, x:x + cw]
+        else:
+            digit_roi = blur
+    else:
+        digit_roi = blur
+
+    digit_resized = cv2.resize(digit_roi, (DIGIT_SIZE, DIGIT_SIZE))
+    return digit_resized
 
 def load_digit_templates():
-    """
-    Create templates for digits 1..9 in memory (no files needed),
-    cache them, and return as a dict {digit: template_img}.
-    """
     global _digit_templates_cache
     if _digit_templates_cache is not None:
         return _digit_templates_cache
 
-    templates = {}
+    templates = {d: [] for d in range(1, 10)}
+
+    if not os.path.isdir(TEMPLATES_DIR):
+        print(f"[OCR] Warning: templates dir not found: {TEMPLATES_DIR}")
+        _digit_templates_cache = templates
+        return templates
+
+    for fname in os.listdir(TEMPLATES_DIR):
+        lower = fname.lower()
+        if not (lower.endswith(".png") or lower.endswith(".jpg") or lower.endswith(".jpeg")):
+            continue
+
+        base = fname.split("_")[0].split(".")[0]
+        base = base.lstrip("0")  # "01" -> "1"
+        if base == "" or not base.isdigit():
+            continue
+
+        digit = int(base)
+        if digit < 1 or digit > 9:
+            continue
+
+        path = os.path.join(TEMPLATES_DIR, fname)
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            print(f"[OCR] Warning: could not read template {path}")
+            continue
+
+        norm = normalize_digit_image_gray(img)
+        templates[digit].append(norm)
+
     for d in range(1, 10):
-        templates[d] = _generate_digit_template(d)
+        if not templates[d]:
+            print(f"[OCR] Warning: no templates found for digit {d}")
 
     _digit_templates_cache = templates
+    print("[OCR] Templates per digit:", {d: len(v) for d, v in templates.items()})
     return templates
 
 def split_into_cells(warped):
-    """
-    Split the 450x450 warped grid into 81 (9x9) grayscale cells.
-    """
     if len(warped.shape) == 3:
         gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     else:
@@ -75,106 +114,44 @@ def split_into_cells(warped):
         cells.append(row_cells)
     return cells
 
-
-def is_cell_empty(cell_gray):
-    """
-    check if cell is empty by checking pixels.
-    """
-    blur = cv2.GaussianBlur(cell_gray, (3, 3), 0)
-    _, binary = cv2.threshold(
-        blur,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-    )
-
-    h, w = binary.shape
-    margin = int(0.1 * h)
-    inner = binary[margin:h - margin, margin:w - margin]
-
-    non_zero = cv2.countNonZero(inner)
-    total = inner.size
-    if total == 0:
-        return True
-
-    fill_ratio = non_zero / total
-    return fill_ratio < 0.01
-
-
-def extract_digit_image(cell_gray):
-    """
-    From a non-empty cell, isolate the largest connected component (the digit),
-    remove the border lines, and resize it to DIGIT_SIZE x DIGIT_SIZE.
-    """
-    blur = cv2.GaussianBlur(cell_gray, (3, 3), 0)
-    _, binary = cv2.threshold(
-        blur,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-    )
-    #dilation
-    kernel = np.ones((2, 2), np.uint8)
-    binary = cv2.dilate(binary, kernel, iterations=1)
-
-    h, w = binary.shape
-    margin = int(0.1 * h)
-    binary[0:margin, :] = 0
-    binary[h - margin:h, :] = 0
-    binary[:, 0:margin] = 0
-    binary[:, w - margin:w] = 0
-
-    contours, _ = cv2.findContours(
-        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    if not contours:
-        return None
-
-    largest = max(contours, key=cv2.contourArea)
-    x, y, cw, ch = cv2.boundingRect(largest)
-
-    # Very tiny component → probably noise
-    if cw * ch < 0.01 * (h * w):
-        return None
-
-    digit = binary[y:y + ch, x:x + cw]
-    digit_resized = cv2.resize(digit, (DIGIT_SIZE, DIGIT_SIZE))
-    return digit_resized
-
-
-def match_digit_to_templates(digit_img, templates):
-    """
-    Compare the digit image to each template and return the best matching digit.
-    Uses sum of absolute differences as a simple distance.
-    """
+def match_digit_to_templates(norm_cell, templates):
     best_digit = 0
-    best_score = None
+    best_score = -1.0
 
-    for d, tmpl in templates.items():
-        # ensure same size
-        resized = cv2.resize(
-            digit_img, (tmpl.shape[1], tmpl.shape[0])
-        )
-        resized_blur = cv2.GaussianBlur(resized, (3, 3), 0)
-        tmpl_blur = cv2.GaussianBlur(tmpl, (3, 3), 0)
+    SCORE_THRESHOLD = 0.55
 
-        diff = cv2.absdiff(resized_blur, tmpl_blur)
+    a = norm_cell.astype(np.float32)
+    a = (a - a.mean()) / (a.std() + 1e-6)
 
-        score = cv2.sumElems(diff)[0]  # smaller = more similar
+    for d in range(1, 10):
+        for tmpl in templates.get(d, []):
+            b = tmpl.astype(np.float32)
+            b = (b - b.mean()) / (b.std() + 1e-6)
+            res = cv2.matchTemplate(a, b, cv2.TM_CCOEFF_NORMED)
+            score = float(res[0, 0])
+            if score > best_score:
+                best_score = score
+                best_digit = d
 
-        if best_score is None or score < best_score:
-            best_score = score
-            best_digit = d
-
+    if best_score < SCORE_THRESHOLD:
+        return 0
     return best_digit
 
+def cell_has_digit(norm_img):
+    blur = cv2.GaussianBlur(norm_img, (3, 3), 0)
+
+    _, bin_inv = cv2.threshold(
+        blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    h, w = bin_inv.shape
+    margin = int(0.15 * h)
+    inner = bin_inv[margin:h - margin, margin:w - margin]
+
+    white = cv2.countNonZero(inner)
+    return white > 40
 
 def recognize_board(warped):
-    """
-    from warped 450x450 image, return a 9x9 numpy array
-    where digits are 1-9 and empty cells are 0.
-    """
     templates = load_digit_templates()
     cells = split_into_cells(warped)
 
@@ -182,16 +159,19 @@ def recognize_board(warped):
     for row_cells in cells:
         row_vals = []
         for cell in row_cells:
-            if is_cell_empty(cell):
+            blur = cv2.GaussianBlur(cell, (3, 3), 0)
+            _, bin_inv = cv2.threshold(
+                blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+            )
+            white = cv2.countNonZero(bin_inv)
+
+            if white < 18:      
                 row_vals.append(0)
                 continue
-
-            digit_img = extract_digit_image(cell)
-            if digit_img is None or not templates:
-                row_vals.append(0)
-            else:
-                d = match_digit_to_templates(digit_img, templates)
-                row_vals.append(int(d))
+            norm = normalize_digit_image_gray(cell)
+            d = match_digit_to_templates(norm, templates)
+            row_vals.append(int(d))
         board.append(row_vals)
 
     return np.array(board, dtype=int)
+
